@@ -1,0 +1,42 @@
+# One command on a cloud server:  docker compose up -d --build   (reads settings from .env)
+# Set in .env before the first start: POSTGRES_PASSWORD (app user) and POSTGRES_ADMIN_PASSWORD (superuser).
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres                                   # superuser, used only to create the app role
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-postgres-admin-change-me}
+      APP_DB_PASSWORD: ${POSTGRES_PASSWORD:-tawreed}            # the app's own non-superuser role
+    # reachable only from this machine
+    ports: ["127.0.0.1:5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tawreed"]
+      interval: 5s
+      retries: 20
+
+  migrate:
+    build: { context: ., target: builder }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://tawreed:${POSTGRES_PASSWORD:-tawreed}@db:5432/tawreed
+    command: sh -c "npm run db:migrate && npm run db:seed"
+    depends_on: { db: { condition: service_healthy } }
+
+  app:
+    build: { context: ., target: runner }
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://tawreed:${POSTGRES_PASSWORD:-tawreed}@db:5432/tawreed
+    # only Nginx/Caddy on this machine talks to the app; it handles HTTPS
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on:
+      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
+volumes:
+  pgdata:
